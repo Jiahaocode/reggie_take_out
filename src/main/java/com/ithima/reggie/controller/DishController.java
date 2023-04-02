@@ -1,17 +1,13 @@
 package com.ithima.reggie.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
-import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
-import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.ithima.reggie.common.R;
 import com.ithima.reggie.dto.DishDto;
 import com.ithima.reggie.entity.Category;
 import com.ithima.reggie.entity.Dish;
 import com.ithima.reggie.entity.DishFlavor;
-import com.ithima.reggie.entity.Employee;
 import com.ithima.reggie.mapper.DishMapper;
 import com.ithima.reggie.service.CategoryService;
 import com.ithima.reggie.service.DishFlavorService;
@@ -19,11 +15,13 @@ import com.ithima.reggie.service.DishService;
 import org.apache.commons.lang.StringUtils;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 @RestController
@@ -40,6 +38,9 @@ public class DishController {
 
     @Autowired
     private DishMapper dishMapper;
+
+    @Autowired
+    private RedisTemplate redisTemplate;
 
     /**
      * 新增菜品
@@ -133,6 +134,16 @@ public class DishController {
     @PutMapping
     public R<String> update(@RequestBody DishDto dishDto){
         dishService.updateWithFlavor(dishDto);
+
+        //清空我们整个缓存区域的数据
+        //Set keys = redisTemplate.keys("dish_*");
+        //redisTemplate.delete(keys);
+
+        //精准动态修改缓存区
+        String key="dish_"+dishDto.getCategoryId()+"_1";
+        redisTemplate.keys(key);
+        redisTemplate.delete(key);
+
         return R.success("添加成功");
     }
 
@@ -175,6 +186,24 @@ public class DishController {
 
     @GetMapping("/list")
     public R<List<DishDto>> get(Dish dish) {
+
+        List<DishDto> dishDtoList=null;
+
+        /**
+         * //dish_1397844263642378242_1，这个是前端传来的参数
+         */
+        String key="dish_"+dish.getCategoryId()+"_"+dish.getStatus();
+
+        //先从redis中获取数据
+        dishDtoList = (List<DishDto>) redisTemplate.opsForValue().get(key);
+
+        //如果存在，直接返回，不需要查找数据库
+        if(dishDtoList!=null){
+            return R.success(dishDtoList);
+        }
+
+        //如果不存在，需要查询数据库，将查询的数据缓存到redis中
+
         //条件查询器
         LambdaQueryWrapper<Dish> queryWrapper = new LambdaQueryWrapper<>();
         //根据传进来的categoryId查询
@@ -187,7 +216,7 @@ public class DishController {
         List<Dish> list = dishService.list(queryWrapper);
 
         //item就是list中的每一条数据，相当于遍历了
-        List<DishDto> dishDtoList = list.stream().map((item) -> {
+         dishDtoList = list.stream().map((item) -> {
             //创建一个dishDto对象
             DishDto dishDto = new DishDto();
             //将item的属性全都copy到dishDto里
@@ -214,6 +243,10 @@ public class DishController {
             return dishDto;
             //将所有返回结果收集起来，封装成List
         }).collect(Collectors.toList());
+
+        //并且放在redis缓存中
+        redisTemplate.opsForValue().set(key,dishDtoList,60, TimeUnit.MINUTES);
+
         return R.success(dishDtoList);
     }
 }
